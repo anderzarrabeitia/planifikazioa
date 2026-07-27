@@ -2318,6 +2318,7 @@ function AjustesTab(props){
         </div>
       </div>
 
+      {props.puedeUsuarios!==false ? (
       <div style={Object.assign({}, S.card, {marginTop:16})}>
         <h4 style={{fontSize:15, marginBottom:4}}>Usuarios y roles</h4>
         <p style={{color:C.secundario, fontSize:J, margin:"0 0 14px"}}>
@@ -2360,6 +2361,7 @@ function AjustesTab(props){
             </tbody>
           </table></div>}
       </div>
+      ) : null}
     </div>
   );
 }
@@ -7713,6 +7715,48 @@ function RevisionView(props){
 }
 
 /* ----- App raíz ----- */
+function LoginView(props){
+  var [usuario, setUsuario] = useState("");
+  var [pass, setPass] = useState("");
+  var [error, setError] = useState("");
+  var [busy, setBusy] = useState(false);
+  function entrar(){
+    if(!usuario.trim() || !pass){ setError("Escribe usuario y contraseña."); return; }
+    setBusy(true); setError("");
+    sha256(pass).then(function(h){
+      var u = (props.usuarios||[]).filter(function(x){ return (x.usuario||"").toLowerCase()===usuario.trim().toLowerCase(); })[0];
+      setBusy(false);
+      if(!u){ setError("Usuario no encontrado."); return; }
+      if(u.passwordHash !== h){ setError("Contraseña incorrecta."); return; }
+      props.onOk({usuario:u.usuario, rol:u.rol});
+    });
+  }
+  function onKey(e){ if(e.key==="Enter") entrar(); }
+  return (
+    <div style={{position:"fixed", inset:0, background:"linear-gradient(135deg,#2B5EA7 0%,#1a3f75 100%)", zIndex:5000, display:"flex", alignItems:"center", justifyContent:"center", padding:20}}>
+      <div style={{background:"#fff", borderRadius:16, padding:"32px 34px", maxWidth:380, width:"100%", boxShadow:"0 20px 60px rgba(0,0,0,.3)"}}>
+        <div style={{display:"flex", alignItems:"center", gap:12, marginBottom:20}}>
+          <div style={{width:44, height:44, borderRadius:11, background:C.azul, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontFamily:"'Source Serif 4',serif", fontWeight:700, fontSize:19}}>AM</div>
+          <div>
+            <div style={{fontFamily:"'Source Serif 4',serif", fontWeight:700, color:C.titulo, fontSize:19, lineHeight:1.1}}>Planifikazioa</div>
+            <div style={{fontSize:12, color:C.secundario}}>Acceso restringido</div>
+          </div>
+        </div>
+        <label style={{fontSize:11, color:C.secundario, display:"block", marginBottom:3, fontWeight:600}}>Usuario</label>
+        <input value={usuario} onChange={function(e){ setUsuario(e.target.value); }} onKeyDown={onKey} autoFocus
+          style={{width:"100%", border:"1px solid "+C.borde, borderRadius:9, padding:"10px 12px", fontSize:15, boxSizing:"border-box", marginBottom:12}} />
+        <label style={{fontSize:11, color:C.secundario, display:"block", marginBottom:3, fontWeight:600}}>Contraseña</label>
+        <input type="password" value={pass} onChange={function(e){ setPass(e.target.value); }} onKeyDown={onKey}
+          style={{width:"100%", border:"1px solid "+C.borde, borderRadius:9, padding:"10px 12px", fontSize:15, boxSizing:"border-box", marginBottom:16}} />
+        {error ? <div style={{fontSize:13, color:C.peligroText, background:C.peligroBg, border:"1px solid "+C.peligro, borderRadius:8, padding:"7px 11px", marginBottom:14}}>{error}</div> : null}
+        <button onClick={entrar} disabled={busy}
+          style={{width:"100%", border:"none", background:C.azul, color:"#fff", borderRadius:10, padding:"12px", fontSize:15, fontWeight:700, cursor: busy?"wait":"pointer"}}>{busy?"Comprobando…":"Entrar"}</button>
+      </div>
+    </div>
+  );
+}
+
+
 function GitHubModal(props){
   var [c, setC] = useState(Object.assign({owner:"", repo:"", token:"", dir:"datuak"}, props.cfg));
   var [probando, setProbando] = useState(false);
@@ -7725,9 +7769,14 @@ function GitHubModal(props){
     props.onProbar(c).then(function(ys){ setProbando(false); setResultado({ok:true, n:ys.length, cursos:ys}); })
       .catch(function(e){ setProbando(false); setResultado({ok:false, msg:e.message}); });
   }
+  var [versErr, setVersErr] = useState("");
   function cargarVersiones(izena){
-    setVerVers(izena); setVers([]);
-    props.getCurso(izena).then(function(res){ if(res && res.edukia && res.edukia.versiones){ setVers(res.edukia.versiones.slice().reverse()); } });
+    setVerVers(izena); setVers([]); setVersErr("");
+    props.getCurso(izena).then(function(res){
+      if(!res){ setVersErr("No se pudo leer el archivo del curso."); return; }
+      if(!res.edukia || !res.edukia.versiones || !res.edukia.versiones.length){ setVersErr("El archivo existe pero no tiene versiones dentro."); return; }
+      setVers(res.edukia.versiones.slice().reverse());
+    }).catch(function(e){ setVersErr("Error al leer: "+e.message); });
   }
   var ov={position:"fixed", inset:0, background:"rgba(30,25,20,.5)", zIndex:300, display:"flex", alignItems:"center", justifyContent:"center", padding:20};
   var card={background:"#fff", borderRadius:14, padding:"22px 24px", maxWidth:640, width:"100%", maxHeight:"88vh", overflow:"auto", boxShadow:"0 10px 40px rgba(0,0,0,.2)"};
@@ -7794,7 +7843,7 @@ function GitHubModal(props){
                 })}
               </tbody>
             </table></div>
-          ) : (verVers ? <div style={{fontSize:12.5, color:C.secundario}}>Cargando versiones…</div> : null)}
+          ) : (verVers ? <div style={{fontSize:12.5, color: versErr?C.peligroText:C.secundario}}>{versErr || "Cargando versiones…"}</div> : null)}
         </div>
 
         <div style={{borderTop:"1px solid "+C.borde, marginTop:14, paddingTop:12, fontSize:11.5, color:C.secundario, lineHeight:1.5}}>
@@ -7826,6 +7875,10 @@ function App(){
   function refrescarContadores(){ setUndoN(undoStack.current.length); setRedoN(redoStack.current.length); }
 
   function setData(d){
+    if(rol==="consulta"){
+      showToast("Tu usuario es de solo consulta: no puedes editar","error");
+      return;
+    }
     if(d && d.cursoCerrado){
       showToast("Curso cerrado: no se puede modificar","error");
       return;
@@ -7889,6 +7942,14 @@ function App(){
   var [ghBusy, setGhBusy] = useState(false);
   var [ghOpen, setGhOpen] = useState(false);       /* modal de ajustes/versiones */
   var ghReady = !!(ghCfg.owner && ghCfg.repo);
+  /* ===== Sesión / candado de acceso ===== */
+  var [sesion, setSesion] = useState(null);        /* {usuario, rol} cuando hay login válido */
+  var usuariosDef = (data.usuarios||[]);
+  var hayLogin = usuariosDef.length>0;             /* si no hay usuarios definidos, no se pide login */
+  var rol = sesion ? sesion.rol : (hayLogin ? null : "admin");   /* sin usuarios = acceso admin (arranque) */
+  var puedeEditar = rol==="admin" || rol==="editor";
+  var puedeNube = rol==="admin" || rol==="editor";
+  var puedeUsuarios = rol==="admin";
   function ghClone(x){ return JSON.parse(JSON.stringify(x)); }
   function nombreCursoActual(){ var c=cursoActivoDe(data); return (c && (c.nombre||c.id)) || "curso"; }
 
@@ -7982,6 +8043,17 @@ function App(){
     {id:"ayuda", label:"Ayuda"}
   ];
   var nErroresObj = detectarIncongruencias(data).filter(function(x){ return x.nivel==="error"; }).length;
+  /* Fases visibles según rol: consulta no ve Configuración (es edición pura) */
+  if(rol==="consulta"){ fases = fases.filter(function(f){ return f.id!=="config"; }); }
+  /* si la fase activa ya no está permitida, saltar a una válida */
+  if(!fases.some(function(f){ return f.id===fase; })){ /* se corrige en el render con fallback */ }
+
+  /* Candado de acceso: si hay usuarios definidos y no hay sesión, mostrar SOLO el login */
+  if(hayLogin && !sesion){
+    return <LoginView usuarios={usuariosDef} onOk={function(s2){ setSesion(s2); }} />;
+  }
+  /* Si la fase activa no está permitida para este rol, caer en la primera disponible */
+  var faseActiva = fases.some(function(f){ return f.id===fase; }) ? fase : (fases[0] ? fases[0].id : "personas");
 
   return (
     <div style={{minHeight:"100vh"}}>
@@ -8014,8 +8086,18 @@ function App(){
                 style={{border:"1px solid "+C.borde, background: redoN>0?"#fff":C.crema, color: redoN>0?C.titulo:C.desactivado, borderRadius:9, padding:"7px 10px", cursor: redoN>0?"pointer":"not-allowed", fontSize:15, lineHeight:1}}>↪</button>
             </div>
           ) : null}
-          <Segmented options={fases.map(function(f){ return (f.id==="revision" && nErroresObj>0) ? Object.assign({}, f, {label:"Revisión ⬤"+nErroresObj}) : f; })} value={fase} onChange={setFase} />
+          <Segmented options={fases.map(function(f){ return (f.id==="revision" && nErroresObj>0) ? Object.assign({}, f, {label:"Revisión ⬤"+nErroresObj}) : f; })} value={faseActiva} onChange={setFase} />
           <Segmented options={[{id:"horas",label:"Horas"},{id:"pct",label:"%"}]} value={(data.unidad==="pct")?"pct":"horas"} onChange={function(v){ setData(Object.assign({}, data, {unidad:v})); }} />
+          {sesion ? (
+            <div className="no-print" style={{display:"flex", alignItems:"center", gap:8, marginLeft:6, paddingLeft:12, borderLeft:"1px solid "+C.borde}}>
+              <div style={{textAlign:"right", lineHeight:1.1}}>
+                <div style={{fontSize:12, fontWeight:700, color:C.titulo}}>{sesion.usuario}</div>
+                <div style={{fontSize:10, color:C.secundario, textTransform:"uppercase", letterSpacing:".04em"}}>{sesion.rol}</div>
+              </div>
+              <button title="Cerrar sesión" onClick={function(){ setSesion(null); }}
+                style={{border:"1px solid "+C.borde, background:"#fff", color:C.secundario, borderRadius:8, padding:"6px 10px", cursor:"pointer", fontSize:12}}>Salir</button>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -8033,13 +8115,13 @@ function App(){
               {ghCursos.map(function(y){ return <option key={y} value={y}>{y}</option>; })}
             </select>
             {ghCurrent ? <span style={{fontSize:12, fontWeight:700, color:C.titulo}}>{ghCurrent}</span> : null}
-            {ghCursos.indexOf(nombreCursoActual())<0 ? (
+            {puedeNube ? (ghCursos.indexOf(nombreCursoActual())<0 ? (
               <button disabled={ghBusy} onClick={ghCrearCursoNube}
                 style={{border:"none", background:C.ok, color:"#fff", borderRadius:8, padding:"5px 11px", cursor: ghBusy?"wait":"pointer", fontSize:K, fontWeight:600}}>+ Crear este curso en la nube</button>
             ) : (
               <button disabled={ghBusy} onClick={function(){ var o=window.prompt("Nota de la versión (opcional):",""); if(o!==null) ghGuardarVersion(o); }}
                 style={{border:"none", background:C.azul, color:"#fff", borderRadius:8, padding:"5px 11px", cursor: ghBusy?"wait":"pointer", fontSize:K, fontWeight:600}}>+ Guardar versión</button>
-            )}
+            )) : <span style={{fontSize:12, color:C.secundario}}>(solo lectura)</span>}
             <button disabled={ghBusy} onClick={function(){ setGhOpen(true); }}
               style={{border:"1px solid "+C.borde, background:"#fff", color:C.titulo, borderRadius:8, padding:"5px 11px", cursor:"pointer", fontSize:K}}>Versiones / Ajustes</button>
             {ghBusy ? <span style={{fontSize:12, color:C.secundario}}>⏳ trabajando…</span> : null}
@@ -8069,14 +8151,14 @@ function App(){
 
       {/* cuerpo */}
       <div style={{maxWidth:1180, margin:"0 auto", padding:"24px 22px 80px"}}>
-        {fase==="config" && <ConfigView data={data} setData={setData} toast={showToast} cambiarCurso={cambiarCurso} />}
-        {fase==="personas" && <PersonasBloque data={data} setData={setData} toast={showToast} />}
-        {fase==="reparto" && <MontajeView data={data} setData={setData} toast={showToast} />}
-        {fase==="economia" && <EconomiaBloque data={data} setData={setData} toast={showToast} />}
-        {fase==="rpt" && <RPTView data={data} setData={setData} toast={showToast} />}
-        {fase==="revision" && <RevisionView data={data} onNav={function(f){ setFase(f); }} toast={showToast} />}
-        {fase==="asesoria" && <AsesoriaView data={data} toast={showToast} />}
-        {fase==="ayuda" && <AyudaView data={data} setData={setData} toast={showToast} />}
+        {faseActiva==="config" && <ConfigView data={data} setData={setData} toast={showToast} cambiarCurso={cambiarCurso} puedeUsuarios={puedeUsuarios} />}
+        {faseActiva==="personas" && <PersonasBloque data={data} setData={setData} toast={showToast} />}
+        {faseActiva==="reparto" && <MontajeView data={data} setData={setData} toast={showToast} />}
+        {faseActiva==="economia" && <EconomiaBloque data={data} setData={setData} toast={showToast} />}
+        {faseActiva==="rpt" && <RPTView data={data} setData={setData} toast={showToast} />}
+        {faseActiva==="revision" && <RevisionView data={data} onNav={function(f){ setFase(f); }} toast={showToast} />}
+        {faseActiva==="asesoria" && <AsesoriaView data={data} toast={showToast} />}
+        {faseActiva==="ayuda" && <AyudaView data={data} setData={setData} toast={showToast} />}
       </div>
 
       {hist ? (
