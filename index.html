@@ -7950,6 +7950,8 @@ function App(){
   var puedeEditar = rol==="admin" || rol==="editor";
   var puedeNube = rol==="admin" || rol==="editor";
   var puedeUsuarios = rol==="admin";
+  var [localLleno, setLocalLleno] = useState(false);   /* el autoguardado local ha fallado */
+  var [sinGuardarNube, setSinGuardarNube] = useState(false);  /* hay cambios posteriores al último guardado en nube */
   function ghClone(x){ return JSON.parse(JSON.stringify(x)); }
   function nombreCursoActual(){ var c=cursoActivoDe(data); return (c && (c.nombre||c.id)) || "curso"; }
 
@@ -7971,7 +7973,7 @@ function App(){
       var ultima=vers.length?vers[vers.length-1]:null;
       if(!ultima){ showToast("El curso no tiene versiones","error"); return; }
       setDataRaw(normalize(ultima.edukia));
-      setGhCurrent(izena); setGhSha(res.sha);
+      setGhCurrent(izena); setGhSha(res.sha); setSinGuardarNube(false);
       showToast(izena+" · v"+ultima.v+" cargada","ok");
     }).catch(function(e){ setGhBusy(false); showToast("Error: "+e.message,"error"); });
   }
@@ -7998,7 +8000,7 @@ function App(){
       vers.push({v:nextV, data:new Date().toISOString().substring(0,16).replace("T"," "), nota:nota||"", edukia:ghClone(data)});
       obj.versiones = vers; obj.curso = izena;
       return ghPutCurso(ghCfg, izena, obj, sha, "v"+nextV+" · "+izena+(nota?(" · "+nota):"")).then(function(newSha){
-        setGhSha(newSha); setGhCurrent(izena); setGhBusy(false); ghCargarLista(); showToast("v"+nextV+" guardada online","ok");
+        setGhSha(newSha); setGhCurrent(izena); setGhBusy(false); setSinGuardarNube(false); ghCargarLista(); showToast("v"+nextV+" guardada online","ok");
       });
     }).catch(function(e){ setGhBusy(false); showToast("Error al guardar: "+e.message,"error"); });
   }
@@ -8010,14 +8012,43 @@ function App(){
     var obj = {curso:izena, versiones:[{v:1, data:new Date().toISOString().substring(0,16).replace("T"," "), nota:"Versión inicial", edukia:ghClone(data)}]};
     setGhBusy(true);
     ghPutCurso(ghCfg, izena, obj, null, "Crear "+izena).then(function(newSha){
-      setGhBusy(false); setGhCurrent(izena); setGhSha(newSha); ghCargarLista(); showToast(izena+" creado en la nube · v1","ok");
+      setGhBusy(false); setGhCurrent(izena); setGhSha(newSha); setSinGuardarNube(false); ghCargarLista(); showToast(izena+" creado en la nube · v1","ok");
     }).catch(function(e){ setGhBusy(false); showToast("Error al crear: "+e.message,"error"); });
   }
 
   useEffect(function(){
     var ok = saveLocal(data);
-    if(!ok){ showToast("No se pudo autoguardar (almacenamiento lleno)","error"); }
+    setLocalLleno(!ok);
+    setSinGuardarNube(true);   /* cualquier cambio marca "pendiente de subir a la nube" */
   }, [data]);
+
+  /* Aviso del navegador al cerrar/refrescar si hay cambios sin subir a la nube o el local falla */
+  useEffect(function(){
+    function antesDeSalir(e){
+      if(sinGuardarNube || localLleno){
+        e.preventDefault();
+        e.returnValue = "Tienes cambios sin guardar en la nube. Si sales, podrías perderlos.";
+        return e.returnValue;
+      }
+    }
+    window.addEventListener("beforeunload", antesDeSalir);
+    return function(){ window.removeEventListener("beforeunload", antesDeSalir); };
+  }, [sinGuardarNube, localLleno]);
+
+  /* liberar espacio: borra claves ajenas del localStorage, conserva las de este aplicativo */
+  function liberarEspacio(){
+    if(!window.confirm("Se borrará el almacenamiento local NO usado por este aplicativo (basura de otras pruebas). Tus datos actuales y la config de la nube se conservan. ¿Continuar?")) return;
+    try{
+      var conservar = {};
+      try{ conservar[LS_KEY] = localStorage.getItem(LS_KEY); }catch(e1){}
+      try{ conservar[GH_KEY] = localStorage.getItem(GH_KEY); }catch(e2){}
+      localStorage.clear();
+      Object.keys(conservar).forEach(function(k){ if(conservar[k]!==null) localStorage.setItem(k, conservar[k]); });
+      var ok = saveLocal(data);
+      setLocalLleno(!ok);
+      showToast(ok ? "Espacio liberado · el autoguardado vuelve a funcionar" : "Aún no hay espacio suficiente","ok");
+    }catch(e){ showToast("No se pudo liberar espacio: "+e.message,"error"); }
+  }
 
   /* Atajos de teclado: Ctrl/Cmd+Z deshacer, Ctrl/Cmd+Shift+Z o Ctrl+Y rehacer */
   useEffect(function(){
@@ -8124,12 +8155,20 @@ function App(){
             )) : <span style={{fontSize:12, color:C.secundario}}>(solo lectura)</span>}
             <button disabled={ghBusy} onClick={function(){ setGhOpen(true); }}
               style={{border:"1px solid "+C.borde, background:"#fff", color:C.titulo, borderRadius:8, padding:"5px 11px", cursor:"pointer", fontSize:K}}>Versiones / Ajustes</button>
-            {ghBusy ? <span style={{fontSize:12, color:C.secundario}}>⏳ trabajando…</span> : null}
+            {ghBusy ? <span style={{fontSize:12, color:C.secundario}}>⏳ trabajando…</span> : (sinGuardarNube && ghCurrent ? <span title="Tienes cambios que aún no has guardado en la nube" style={{fontSize:12, color:C.avisoText, fontWeight:600}}>● cambios sin guardar</span> : null)}
           </React.Fragment>
         ) : (
           <span style={{fontSize:12, color:C.secundario}}>Trabaja con versiones guardadas en un repositorio privado de GitHub. También puedes seguir usando Importar/Exportar JSON.</span>
         )}
       </div>
+
+      {/* ALARMA: el autoguardado local ha fallado (almacenamiento del navegador lleno) */}
+      {localLleno ? (
+        <div className="no-print" style={{background:C.peligro, color:"#fff", padding:"10px 22px", display:"flex", alignItems:"center", gap:12, fontSize:13, fontWeight:600, flexWrap:"wrap", position:"sticky", top:0, zIndex:120}}>
+          <span>⚠️ NO se está guardando en este equipo (almacenamiento del navegador lleno). Guarda en la nube o exporta el JSON YA para no perder cambios.</span>
+          <button onClick={liberarEspacio} style={{border:"none", background:"#fff", color:C.peligroText, borderRadius:8, padding:"5px 12px", cursor:"pointer", fontSize:12, fontWeight:700}}>Liberar espacio</button>
+        </div>
+      ) : null}
 
       {data.cursoCerrado ? (
         <div className="no-print" style={{background:C.avisoBg, borderBottom:"1px solid "+C.aviso, padding:"8px 22px", display:"flex", alignItems:"center", gap:10, fontSize:13, color:C.avisoText}}>
