@@ -2502,6 +2502,30 @@ function detectarIncongruencias(d, incluirDescartados){
           "Personas → Ficha → "+nomP(p), nomP(p));
       }
     }
+    /* AVISO activación vs fechas: contrato que cae en el curso por fechas pero NO está activado (computa),
+       o al revés, activado pero fuera del curso. No cambia nada solo: avisa para que el usuario lo revise a mano. */
+    (function(){
+      var per = periodoCurso(d);
+      function caeEnCurso(k){
+        if(k.desde && per.hasta && String(k.desde) > String(per.hasta)) return false;
+        if(k.hasta && per.desde && String(k.hasta) < String(per.desde)) return false;
+        return true;
+      }
+      (p.contratos||[]).forEach(function(k){
+        var dentro = caeEnCurso(k);
+        var activo = (k.computa !== false);
+        var etiqueta = (k.tipo||"contrato") + (k.horas?(" de "+r2(num(k.horas))+" h"):"");
+        if(dentro && !activo){
+          add("revisable","Contrato del curso sin activar",
+            nomP(p)+": el "+etiqueta+" corresponde al curso actual por fechas, pero NO está marcado como \"computa\". Actívalo si debe contar, o déjalo si es una excepción.",
+            "Personas → Ficha → "+nomP(p), nomP(p));
+        } else if(!dentro && activo){
+          add("revisable","Contrato activado fuera del curso",
+            nomP(p)+": el "+etiqueta+" está marcado como \"computa\" pero sus fechas quedan fuera del curso actual. Desactívalo si no debe contar este año.",
+            "Personas → Ficha → "+nomP(p), nomP(p));
+        }
+      });
+    })();
     /* MEJORA 3: sustituto/a que acumula contratos solapados por encima de su jornada completa */
     (function(){
       var cons = (p.contratos||[]).filter(function(k){ return k.computa!==false; });
@@ -5524,16 +5548,28 @@ function FichasView(props){
     setEdit(null);
     if(props.toast) props.toast("Guardado","ok");
   }
-  function borrarP(id){
+  function borrarP(idOtObj){
+    var id = (idOtObj && typeof idOtObj==="object") ? idOtObj.id : idOtObj;
+    var per = d.personas.filter(function(x){ return x.id===id; })[0];
+    var nombre = per ? (per.apellidos+", "+per.nombre).replace(/^, |, $/,"") : "esta persona";
     var nT = d.tramos.filter(function(t){ return t.personaId===id; }).length;
-    if(!window.confirm("¿Eliminar esta persona?" + (nT?("\n\nSe borrarán también sus " + nT + " asignación(es)."):""))) return;
+    var nInc = (d.incidencias||[]).filter(function(x){ return x.personaId===id || x.sustitutoId===id; }).length;
+    var lineas = "Vas a eliminar a " + nombre + " del curso actual.\n\n";
+    if(nT || nInc){
+      lineas += "Esto afectará a:\n";
+      if(nT) lineas += "\u00b7 " + nT + " asignaci\u00f3n(es) de reparto (se borrar\u00e1n).\n";
+      if(nInc) lineas += "\u00b7 " + nInc + " incidencia(s) donde aparece como titular o sustituto/a (se borrar\u00e1n).\n";
+      lineas += "\n";
+    }
+    lineas += "Se mantendr\u00e1 en los cursos anteriores donde haya trabajado. \u00bfContinuar?";
+    if(!window.confirm(lineas)) return;
     props.setData(Object.assign({}, d, {
       personas: d.personas.filter(function(x){ return x.id!==id; }),
       tramos: d.tramos.filter(function(t){ return t.personaId!==id; }),
       incidencias: (d.incidencias||[]).filter(function(x){ return x.personaId!==id && x.sustitutoId!==id; })
     }));
     setEdit(null);
-    if(props.toast) props.toast("Persona eliminada","info");
+    if(props.toast) props.toast(nombre + " eliminado/a del curso actual","info");
   }
   function nuevaP(){
     setEdit({id:uid("per"), apellidos:"", nombre:"", dni:"", categoriasLaborales:[], cargoDirectivo:"", tipoContrato:"",
@@ -7428,6 +7464,184 @@ function AyudaView(props){
   );
 }
 
+/* ===== Generación de Excel para Asesoría (4 pestañas, datos del curso activo) ===== */
+function generarExcelAsesoria(d, cual){
+  if(typeof XLSX==="undefined"){ alert("No se ha cargado la librería de Excel. Revisa la conexión."); return; }
+  var per = periodoCurso(d);
+  var anio = (String(d.curso||d.cursoNombre||"").match(/20\d{2}/)||[""])[0];
+  var cats = d.categorias || [];
+  var catById = {}; cats.forEach(function(c){ catById[c.id]=c; });
+  var tramosByP = {}; (d.tramos||[]).forEach(function(t){ (tramosByP[t.personaId]=tramosByP[t.personaId]||[]).push(t); });
+  function horasBaseDe(cat){ if(cat.jornadaId && d.jornadas && d.jornadas.tipos){ var tj=d.jornadas.tipos.filter(function(x){return x.id===cat.jornadaId;})[0]; if(tj) return num(tj.lectivas); } return num(cat.horasBase); }
+  function horasTramo(t){ var cat=catById[t.categoriaId]; if(!cat) return 0; return num(t.porcentaje)/100*horasBaseDe(cat); }
+  function nomP(p){ return (p.apellidos+", "+p.nombre).replace(/^, |, $/,""); }
+  function contratoAct(p, tipo){
+    return (p.contratos||[]).filter(function(k){
+      if(k.computa===false) return false;
+      if((k.tipo||"")!==tipo) return false;
+      if(k.desde && per.hasta && String(k.desde)>String(per.hasta)) return false;
+      if(k.hasta && per.desde && String(k.hasta)<String(per.desde)) return false;
+      return true;
+    })[0];
+  }
+  function fechaCorta(f){ if(!f) return ""; var m=String(f).match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? (m[3]+"/"+m[2]+"/"+m[1]) : f; }
+  function tienePD(p){ return (tramosByP[p.id]||[]).some(function(t){ var c=catById[t.categoriaId]; return c && c.fuenteSugerida==="f_pd"; }); }
+  function tieneNoPD(p){ return (tramosByP[p.id]||[]).some(function(t){ var c=catById[t.categoriaId]; return c && c.fuenteSugerida!=="f_pd"; }); }
+
+  var catsPD = cats.filter(function(c){ return c.fuenteSugerida==="f_pd"; });
+  var catsNoPD = cats.filter(function(c){ return c.fuenteSugerida!=="f_pd"; });
+
+  /* --- Construye la matriz (array de arrays) de una hoja tipo "pago delegado / no pago delegado" --- */
+  function hojaCategoria(titulo, columnas, personas){
+    var aoa = [];
+    aoa.push(["COLEGIO EL AVE MARIA — "+titulo+"  ·  Curso "+(anio?anio+"/"+(parseInt(anio,10)+1):"")]);
+    aoa.push([]);
+    /* fila cabecera: contrato base (Desde,Horas) + anexo (Desde,Hasta,Horas) + Apellidos + Tutoría + columnas + Total */
+    var cab = ["Contrato base","", "Anexo","","", "Apellidos y Nombre", "Tutoría"];
+    columnas.forEach(function(c){ cab.push(nombreDe(c)); });
+    cab.push("Total h");
+    columnas.forEach(function(c){ cab.push("% "+nombreDe(c)); });
+    cab.push("% Total");
+    aoa.push(cab);
+    /* subcabecera de fechas */
+    var sub = ["Desde","Horas","Desde","Hasta","Horas","",""];
+    columnas.forEach(function(){ sub.push(""); });
+    sub.push("");
+    columnas.forEach(function(){ sub.push(""); });
+    sub.push("");
+    aoa.push(sub);
+    /* filas por persona */
+    personas.forEach(function(p){
+      var base = contratoAct(p,"Contrato base");
+      var anexo = contratoAct(p,"Anexo");
+      var fila = [
+        base?fechaCorta(base.desde):"", base?num(base.horas):"",
+        anexo?fechaCorta(anexo.desde):"", anexo?fechaCorta(anexo.hasta):"", anexo?num(anexo.horas):"",
+        nomP(p), p.tutor?"X":""
+      ];
+      var totalH=0, pctTotal=0;
+      var horasCol=[], pctCol=[];
+      columnas.forEach(function(c){
+        var trs=(tramosByP[p.id]||[]).filter(function(t){ return t.categoriaId===c.id; });
+        var h=trs.reduce(function(a,t){ return a+horasTramo(t); },0);
+        var pct=trs.reduce(function(a,t){ return a+num(t.porcentaje); },0);
+        horasCol.push(h>0?r2(h):"");
+        pctCol.push(pct>0?r2(pct):"");
+        totalH+=h; pctTotal+=pct;
+      });
+      fila=fila.concat(horasCol);
+      fila.push(r2(totalH));
+      fila=fila.concat(pctCol);
+      fila.push(r2(pctTotal));
+      aoa.push(fila);
+    });
+    return aoa;
+  }
+
+  /* --- Hoja CASOS ESPECIALES --- */
+  function hojaCasos(personas){
+    var fuentes = (d.fuentes||[]).filter(function(f){ return f.id!=="f_pd"; });
+    var aoa = [];
+    aoa.push(["COLEGIO EL AVE MARIA — CASOS ESPECIALES  ·  Curso "+(anio?anio+"/"+(parseInt(anio,10)+1):"")]);
+    aoa.push([]);
+    var cab = ["Contrato base","","Anexo","","","Apellidos y Nombre","EP","ES","Pago delegado"];
+    fuentes.forEach(function(f){ cab.push(nombreDe(f)); });
+    cab.push("Reducciones jornada");
+    cab.push("Total");
+    aoa.push(cab);
+    aoa.push(["Desde","Horas","Desde","Hasta","Horas","","","","(h lectivas)"]);
+    personas.forEach(function(p){
+      var base=contratoAct(p,"Contrato base"), anexo=contratoAct(p,"Anexo");
+      /* etapa EP/ES: por el grupoCuadre de sus tramos (si tiene ESO -> ES, si no EP) */
+      var esES=(tramosByP[p.id]||[]).some(function(t){ var c=catById[t.categoriaId]; return c && (c.grupoCuadre==="ESO"); });
+      var fila=[ base?fechaCorta(base.desde):"", base?num(base.horas):"",
+        anexo?fechaCorta(anexo.desde):"", anexo?fechaCorta(anexo.hasta):"", anexo?num(anexo.horas):"",
+        nomP(p), esES?"":"X", esES?"X":"" ];
+      /* pago delegado (h) */
+      var hPD=(tramosByP[p.id]||[]).filter(function(t){ return t.fuenteId==="f_pd"; }).reduce(function(a,t){ return a+horasTramo(t); },0);
+      fila.push(hPD>0?r2(hPD):"");
+      var total=hPD;
+      /* cada fuente no-pd */
+      fuentes.forEach(function(f){
+        var h=(tramosByP[p.id]||[]).filter(function(t){ return t.fuenteId===f.id; }).reduce(function(a,t){ return a+horasTramo(t); },0);
+        fila.push(h>0?r2(h):"");
+        total+=h;
+      });
+      /* reducciones de jornada: horas que ESTA persona cubre como sustituta (en positivo) */
+      var hRed=(d.incidencias||[]).filter(function(x){ return x.sustitutoId===p.id && /reduc/i.test(x.tipo||""); })
+        .reduce(function(a,x){ return a+horasSustitucionDe(d,x); },0);
+      fila.push(hRed>0?r2(hRed):"");
+      total+=hRed;
+      fila.push(r2(total));
+      aoa.push(fila);
+    });
+    return aoa;
+  }
+
+  /* --- Hoja PLUSES CARGOS DIRECTIVOS --- */
+  function hojaPluses(){
+    var pl=d.pluses||{etapas:[],cargos:[]};
+    var calc=plusesCalc(pl);
+    var aoa=[];
+    aoa.push(["COLEGIO EL AVE MARIA — PLUSES CARGOS DIRECTIVOS  ·  Curso "+(anio?anio+"/"+(parseInt(anio,10)+1):"")]);
+    aoa.push([]);
+    /* cabecera de etapas */
+    var hEt=["Etapa"]; pl.etapas.forEach(function(e){ hEt.push(e.nombre); });
+    aoa.push(hEt);
+    var hUn=["Nº Unidades"]; pl.etapas.forEach(function(e){ hUn.push(num(e.unidades)); });
+    aoa.push(hUn);
+    var hEu=["€/Unidad/Mes"]; pl.etapas.forEach(function(e){ hEu.push(num(e.euros)); });
+    aoa.push(hEu);
+    var hTot=["Total/Mes"]; calc.totEt.forEach(function(v){ hTot.push(r2(v)); });
+    hTot.push(r2(calc.grand));
+    aoa.push(hTot);
+    aoa.push([]);
+    /* tabla de cargos */
+    var cab=["Apellidos y Nombre","Cargo","N% acuerdo"];
+    pl.etapas.forEach(function(e){ cab.push(e.nombre+" %"); });
+    cab.push("Total €"); cab.push("Acuerdo €"); cab.push("Dif €");
+    aoa.push(cab);
+    pl.cargos.forEach(function(cg, ci){
+      var rr=calc.rows[ci];
+      var fila=[cg.nombre||"", cg.cargo||"", num(cg.n)];
+      pl.etapas.forEach(function(e, ei){ fila.push(num((cg.pres||[])[ei])); });
+      fila.push(r2(rr.total)); fila.push(r2(rr.acuerdo)); fila.push(r2(rr.dif));
+      aoa.push(fila);
+    });
+    return aoa;
+  }
+
+  /* --- decidir qué generar --- */
+  var wb = XLSX.utils.book_new();
+  var nombre = "EAMI_"+cual+"_"+(anio||"curso");
+  var cmp = cmpPersona;
+  function ordena(arr){ return arr.slice().sort(cmp); }
+  function aoa_ws(aoa){
+    var ws = XLSX.utils.aoa_to_sheet(aoa);
+    var maxCols = aoa.reduce(function(m,f){ return Math.max(m, f.length); }, 0);
+    var cols=[]; for(var i=0;i<maxCols;i++){ cols.push({wch: i===5?26:10}); }
+    ws["!cols"]=cols;
+    ws["!pageSetup"] = { orientation:"landscape", fitToWidth:1, fitToHeight:0, scale:0 };
+    ws["!margins"] = { left:0.3, right:0.3, top:0.4, bottom:0.4, header:0.2, footer:0.2 };
+    return ws;
+  }
+
+  if(cual==="pago_delegado"){
+    var aoa = hojaCategoria("PAGO DELEGADO", catsPD, ordena(d.personas.filter(tienePD)));
+    XLSX.utils.book_append_sheet(wb, aoa_ws(aoa), "Pago delegado");
+  } else if(cual==="no_pago_delegado"){
+    var aoa2 = hojaCategoria("NO PAGO DELEGADO", catsNoPD, ordena(d.personas.filter(tieneNoPD)));
+    XLSX.utils.book_append_sheet(wb, aoa_ws(aoa2), "NO pago delegado");
+  } else if(cual==="casos_especiales"){
+    var aoa3 = hojaCasos(ordena(d.personas.filter(function(p){ return tienePD(p)&&tieneNoPD(p); })));
+    XLSX.utils.book_append_sheet(wb, aoa_ws(aoa3), "Casos especiales");
+  } else if(cual==="pluses"){
+    XLSX.utils.book_append_sheet(wb, aoa_ws(hojaPluses()), "Pluses cargos directivos");
+  }
+  XLSX.writeFile(wb, nombre+".xlsx");
+
+}
+
 function AsesoriaView(props){
   var d = props.data;
   var per = periodoCurso(d);
@@ -7501,6 +7715,18 @@ function AsesoriaView(props){
           <button style={S.btn} onClick={function(){ setDesde(per.desde); setHasta(per.hasta); }}>Curso completo</button>
           <button style={S.btn} onClick={function(){ window.print(); }}>Imprimir</button>
           <button style={S.btnPri} onClick={exportar}>Excel</button>
+        </div>
+      </div>
+
+      {/* Generar Excel oficial para la asesoría (4 modelos) */}
+      <div className="no-print" style={{marginBottom:18, padding:"14px 16px", background:C.superficie, border:"1px solid "+C.borde, borderRadius:12}}>
+        <div style={{fontSize:14, fontWeight:700, color:C.titulo, marginBottom:3}}>Generar Excel para la asesoría</div>
+        <div style={{fontSize:12, color:C.secundario, marginBottom:12}}>Rellena los modelos de Asperco con los datos del curso actual. Se abre en horizontal para imprimir o guardar como PDF.</div>
+        <div style={{display:"flex", gap:10, flexWrap:"wrap"}}>
+          <button style={S.btnPri} onClick={function(){ generarExcelAsesoria(d, "pago_delegado"); }}>Pago delegado</button>
+          <button style={S.btnPri} onClick={function(){ generarExcelAsesoria(d, "no_pago_delegado"); }}>NO pago delegado</button>
+          <button style={S.btnPri} onClick={function(){ generarExcelAsesoria(d, "casos_especiales"); }}>Casos especiales</button>
+          <button style={S.btnPri} onClick={function(){ generarExcelAsesoria(d, "pluses"); }}>Pluses cargos directivos</button>
         </div>
       </div>
 
@@ -7804,6 +8030,7 @@ function GitHubModal(props){
           <button onClick={function(){ props.onSave(c); }} style={{border:"none", background:C.azul, color:"#fff", borderRadius:8, padding:"8px 14px", cursor:"pointer", fontWeight:600, fontSize:13}}>Guardar ajustes</button>
           <button onClick={probar} disabled={!c.owner||!c.repo||probando} style={{border:"1px solid "+C.borde, background:"#fff", color:C.titulo, borderRadius:8, padding:"8px 14px", cursor:(!c.owner||!c.repo)?"not-allowed":"pointer", fontSize:13}}>{probando?"Probando…":"Probar conexión"}</button>
           {c.token ? <button onClick={function(){ var n=Object.assign({}, c, {token:""}); setC(n); props.onSave(n); }} style={{border:"1px solid "+C.peligroBgBorde, background:"#fff", color:C.peligroText, borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:13}}>Olvidar token</button> : null}
+          {props.onLiberar ? <button onClick={props.onLiberar} title="Vacía el almacenamiento del navegador no usado por este aplicativo (libera espacio). No toca tus datos ni la nube." style={{border:"1px solid "+C.borde, background:"#fff", color:C.secundario, borderRadius:8, padding:"8px 14px", cursor:"pointer", fontSize:13}}>Liberar espacio</button> : null}
         </div>
 
         {resultado ? (
@@ -8220,6 +8447,7 @@ function App(){
         onSave={function(c){ ghSaveCfg(c); setGhCfg(c); showToast("Ajustes guardados","ok"); }}
         onProbar={function(c){ setGhBusy(true); return ghListCursos(c).then(function(ys){ setGhBusy(false); return ys; }).catch(function(e){ setGhBusy(false); throw e; }); }}
         getCurso={function(izena){ return ghGetCurso(ghCfg, izena); }}
+        onLiberar={liberarEspacio}
         onAbrirVersion={function(izena, v){ ghAbrirVersion(izena, v); setGhOpen(false); }} /> : null}
       <CalcFlotante data={data} toast={showToast} onHistorial={function(){ setHist(true); }} onAyuda={function(){ setFase("ayuda"); }} onNavegar={function(f){ setFase(f); }} />
     </div>
